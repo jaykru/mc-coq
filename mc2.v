@@ -1,5 +1,6 @@
 Require Import Setoid.
 Require Import Lia.
+Require Import Coq.Program.Equality.
 
 Axiom double_neg : forall P, P <-> ~~P.
 Lemma fold_not : forall (P: Prop), (P -> False) <-> ~P. intuition auto. Defined.
@@ -41,7 +42,7 @@ Section LTLdef.
   Notation "ζ ^^ k" := (from k ζ) (at level 10).
 
   Reserved Notation "ζ ⊨ φ" (at level 50, no associativity).
-  Fixpoint models (φ : LTL) (ζ : TemInt) {struct φ}: Prop :=
+  Fixpoint models (ζ : TemInt) (φ : LTL) {struct φ}: Prop :=
       match φ with
       | injp_ltl p =>
         p (ζ 0)
@@ -58,13 +59,41 @@ Section LTLdef.
       | true_ltl =>
         True
       end
-  where "ζ ⊨ φ" := (models φ ζ).
+  where "ζ ⊨ φ" := (models ζ φ).
+
+  Fixpoint models_upto (k:nat) (ζ : TemInt) (φ : LTL): Prop :=
+      match k with
+      | 0 => (* base case: modeling something for 0 cycles is vaccuously 
+                false. this is the only way to make until and next work out. *)
+             False
+      | _ => match φ with
+              | injp_ltl p =>
+                p (ζ 0) (* to model an immediate property at for the next S k' cycles,
+                           it suffices to satisfy it right now. *)
+              | imp_ltl ψ π =>
+                (models_upto k ζ ψ) -> (models_upto k ζ π)
+              | next_ltl ψ =>
+                (* next ψ says that ψ will be true in the next cycle.
+                   for this to be true for up to k cycles,
+                   we need that ψ is maintained for up to k-1 cycles by the suffix of ζ *)
+                models_upto (k-1) (ζ ^^ 1) ψ
+              | until_ltl ψ π =>
+                exists (i:nat),
+                  (i <= k)
+                  /\ models_upto (k-i) (ζ ^^ i) π (* note that this *doesn't* mean
+                                                     that π need be true for k-i cycles. *)
+                  /\ (forall j, j < i -> ζ ^^ j ⊨ ψ)
+              | false_ltl =>
+                False
+              | true_ltl =>
+                True
+        end
+      end.
 
   Definition not_ltl (φ : LTL) : LTL := imp_ltl φ false_ltl.
   Definition ev_ltl (φ : LTL): LTL := true_ltl U- φ.
   Definition always_ltl (φ : LTL): LTL := not_ltl (ev_ltl (not_ltl φ)).
   Definition and_ltl (ϕ ψ : LTL) : LTL := not_ltl (imp_ltl ϕ (not_ltl ψ)).
-
 
   Theorem and_good : forall ζ ϕ ψ, ζ ⊨ ϕ /\ ζ ⊨ ψ <-> ζ ⊨ (and_ltl ϕ ψ).
   Proof.
@@ -195,3 +224,128 @@ Fixpoint MealyTrace' (M : Mealy) (I : nat -> Σ M) (n : nat) {struct n}: (Q M) *
 
 Definition MealyTrace (M : Mealy) (I : nat -> Σ M) : @TemInt (Q M * Σ M) :=
     fun n => MealyTrace' M I n.
+
+Definition reachability_diameter (M : Mealy) : Type :=
+  { D : nat &
+  forall (s : nat -> Q M) (n : nat),
+    s 0 = Q₀ M 
+    /\ (forall t, t <= n -> exists input, s t = fst ((δ M) (s (t-1)) input))
+    -> (D <= n) 
+       /\ (exists s', s' 0 = Q₀ M 
+           /\ s' D = s n 
+           /\ forall t, t <= D -> 
+                        exists input, s' t = fst ((δ M) (s' (t-1)) input)) }.
+
+Definition IsFinite (M: Mealy) : Prop := 
+  exists (s: nat -> Q M) (D : nat), forall (q : Q M), exists (n : nat), n <= D /\ s n = q.
+  
+Theorem reachability_diameter_suffices_bmc (M : Mealy) (P : LTL) : 
+  forall (_D : reachability_diameter M) (D : nat) (I : nat -> Σ M), 
+    (exists p, P = always_ltl p) ->
+    D = projT1 _D ->
+    models_upto D (MealyTrace M I) P ->
+    models (MealyTrace M I) P.
+  Proof.
+    intros.
+    match goal with
+    | [ H : exists p, P = always_ltl p |- _ ] => destruct H as [p H]; rewrite H in *; clear H P
+    end.
+    simpl.
+    left.
+    classical.
+    intro.
+    classical.
+    left.
+    intuition.
+    (* proof proceeds by case analysis on the comparison of x and D. *)
+    pose proof (lt_eq_lt_dec D x) as HcompDx.
+    repeat match goal with
+            | [ H : context[{_} + {_}] |- _] => destruct H as [H | H]
+    end.
+    {
+      admit. (* D < x, hard case, need induction on x. *)
+    }
+    {
+      (* we have `models_upto D p` and we need to show that `models (from D ζ) p` *)  
+      (* D = x, case should be easy *)
+      rewrite <-HcompDx in *.
+      assert (HStronger: forall T (ζ: TemInt) φ, (forall k, models_upto k ζ (always_ltl φ)) -> forall t, @models T (from t ζ) φ).
+      {
+        intros.
+        specialize (H t).
+        simpl in H.        
+        induction t; [solve[intuition auto]|].
+        {
+          induction D.
+          {
+            simpl in H1.
+            inversion H1.
+          }
+          {
+            simpl in IHD. eapply IHD.
+            { admit. }
+          }  
+          simpl in H1.
+          simpl in H1.
+          destruct t.
+        }
+        {
+          specialize (H (S t)).
+          simpl in H.
+        }
+      }      
+      dependent induction D.
+      { simpl in H1.
+        inversion H1. }
+      { }
+      
+      induction D.
+      { intros.
+        simpl in H1. 
+        inversion H1. }
+      {
+        intros.
+
+        eapply IHD.  
+       }
+
+      unfold models_upto,always_ltl in H1.
+      simpl in H1.
+
+    }
+    repeat match goal destruct HcompDx.
+    { }
+    { }
+    
+    induction x.
+    {
+      unfold reachability_diameter in _D.
+      destruct _D as [D' H_D_reachability_diameter].
+      simpl in H0.
+      rewrite <-H0 in *. clear H0. clear D'.
+      induction D; intuition auto.
+      {
+        match goal with
+        | [ H : models_upto _ _ _ |- _ ] => inversion H
+        end.
+      }
+      {
+        eapply IHD.
+        intros.
+        split.
+        {
+          unshelve epose proof (_ : S D <= n).
+          { 
+            eapply H_D_reachability_diameter.
+            eapply H.
+          }
+          lia.
+         }
+         {
+          
+         }
+      }
+      unfold models_upto in H1.
+      simpl in H1.
+      simpl in *.
+    

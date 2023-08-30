@@ -1,6 +1,7 @@
 Require Import Setoid.
 Require Import Lia.
 Require Import Coq.Program.Equality.
+Require Import Coq.Arith.Compare_dec.
 
 Axiom double_neg : forall P, P <-> ~~P.
 Lemma fold_not : forall (P: Prop), (P -> False) <-> ~P. intuition auto. Defined.
@@ -8,6 +9,7 @@ Axiom forall_exists_duality1 : forall {T} (P: T -> Prop), ~ (exists x, P x) <-> 
 Axiom forall_exists_duality2 : forall {T} (P: T -> Prop), ~ (forall x, P x) <-> (exists x, ~ P x).
 Axiom DeMorgan1 : forall (P Q : Prop), ~(P /\ Q) <-> (~P \/ ~Q).
 Axiom DeMorgan2 : forall (P Q : Prop), ~(P \/ Q) <-> (~P /\ ~Q).
+Axiom TODO : False.
 
 Ltac classical := 
   repeat match goal with
@@ -61,34 +63,55 @@ Section LTLdef.
       end
   where "ζ ⊨ φ" := (models ζ φ).
 
-  Fixpoint models_upto (k:nat) (ζ : TemInt) (φ : LTL): Prop :=
-      match k with
-      | 0 => (* base case: modeling something for 0 cycles is vaccuously 
-                false. this is the only way to make until and next work out. *)
-             False
-      | _ => match φ with
-              | injp_ltl p =>
-                p (ζ 0) (* to model an immediate property at for the next S k' cycles,
-                           it suffices to satisfy it right now. *)
-              | imp_ltl ψ π =>
-                (models_upto k ζ ψ) -> (models_upto k ζ π)
-              | next_ltl ψ =>
-                (* next ψ says that ψ will be true in the next cycle.
-                   for this to be true for up to k cycles,
-                   we need that ψ is maintained for up to k-1 cycles by the suffix of ζ *)
-                models_upto (k-1) (ζ ^^ 1) ψ
-              | until_ltl ψ π =>
-                exists (i:nat),
-                  (i <= k)
-                  /\ models_upto (k-i) (ζ ^^ i) π (* note that this *doesn't* mean
-                                                     that π need be true for k-i cycles. *)
-                  /\ (forall j, j < i -> ζ ^^ j ⊨ ψ)
-              | false_ltl =>
-                False
-              | true_ltl =>
-                True
-        end
+  (* Fixpoint models_upto (k:nat) (ζ : TemInt) (φ : LTL): Prop := *)
+  (*     match k with *)
+  (*     | 0 => (* base case: modeling something for 0 cycles is vaccuously  *)
+  (*               false. this is the only way to make until and next work out. *) *)
+  (*            False *)
+  (*     | (S k') => match φ with *)
+  (*             | injp_ltl p => *)
+  (*               p (ζ 0) (* to model an immediate property for the next S k' cycles, *)
+  (*                          it suffices to satisfy it right now. *) *)
+  (*             | imp_ltl ψ π => *)
+  (*               (models_upto k ζ ψ) -> (models_upto k ζ π) *)
+  (*             | next_ltl ψ => *)
+  (*               (* next ψ says that ψ will be true in the next cycle. *)
+  (*                  for this to be true for up to k cycles, *)
+  (*                  we need that ψ is maintained for up to k-1 cycles by the suffix of ζ *) *)
+  (*               models_upto k' (ζ ^^ 1) ψ *)
+  (*             | until_ltl ψ π => *)
+  (*               exists (i:nat), *)
+  (*                 (i <= k) *)
+  (*                 /\ models_upto (k-i) (ζ ^^ i) π (* note that this *doesn't* mean *)
+  (*                                                    that π need be true for k-i cycles. *) *)
+  (*                 /\ (forall j, j < i -> ζ ^^ j ⊨ ψ) *)
+  (*             | false_ltl => *)
+  (*               False *)
+  (*             | true_ltl => *)
+  (*               True *)
+  (*       end *)
+  (*     end. *)
+
+  Fixpoint clarke_bm_helper (i k:nat) (ζ : TemInt) (φ : LTL): Prop :=
+      match φ with
+      | injp_ltl p =>
+        p (ζ i)
+      | imp_ltl ψ π =>
+        (clarke_bm_helper i k ζ ψ) -> (clarke_bm_helper i k ζ π)
+      | next_ltl ψ =>
+        i < k /\ clarke_bm_helper (S i) k ζ ψ
+      | until_ltl ψ π =>
+        exists j, i <= j
+             /\ j <= k
+             /\ clarke_bm_helper j k ζ π
+             /\ (forall b, (i <= b /\ b < j) ->
+                     clarke_bm_helper b k ζ ψ)
+      | false_ltl => False
+      | true_ltl => True
       end.
+
+  Definition clarke_bm k ζ φ: Prop := clarke_bm_helper 0 k ζ φ.
+  Definition models_upto := clarke_bm.
 
   Definition not_ltl (φ : LTL) : LTL := imp_ltl φ false_ltl.
   Definition ev_ltl (φ : LTL): LTL := true_ltl U- φ.
@@ -179,7 +202,6 @@ Section LTLdef.
      repeat (progress classical || intro).
      left.
      split; [|solve[intuition auto]].
-     Require Import Coq.Arith.Compare_dec.
      pose proof (lt_eq_lt_dec x i) as Hcompxi.
      repeat match goal with
             | [ H : context[{_} + {_}] |- _] => destruct H as [H | H]
@@ -201,8 +223,7 @@ Section LTLdef.
         }
       }
       remember (x - i) as diff.
-      unshelve erewrite (_ : x = i + diff); try solve[lia].
-      auto.
+      unshelve erewrite (_ : x = i + diff); solve[lia || auto].
      }
     }
 Defined.
@@ -212,140 +233,156 @@ Record Mealy : Type := mkMealy {
                            Σ : Type
                          ; Q : Type
                          ; δ : Q -> Σ -> Q * Σ
-                         ; Q₀ : Q
+                         ; Q0 : Q
                          }.
 
-Fixpoint MealyTrace' (M : Mealy) (I : nat -> Σ M) (n : nat) {struct n}: (Q M) * (Σ M) :=
+Fixpoint MealyTrace' (M : Mealy) (I : nat -> Σ M) (n : nat) {struct n}: (Q M) * option (Σ M) :=
     match n with
-    | 0 => (δ M) (Q₀ M) (I 0)
+    | 0 => ((Q0 M) , None)
     | S n' => let (Q', _) := MealyTrace' M I n' in
-             (δ M) Q' (I n)
+             match (δ M) Q' (I n') with
+             | (q,σ) => (q, Some σ)
+             end
     end.
 
-Definition MealyTrace (M : Mealy) (I : nat -> Σ M) : @TemInt (Q M * Σ M) :=
+Definition MealyTrace (M : Mealy) (I : nat -> Σ M) : @TemInt (Q M * option (Σ M)) :=
     fun n => MealyTrace' M I n.
 
+Lemma MealyTrace0isQ0: forall M I, fst (MealyTrace M I 0) = Q0 M.
+  auto.
+Defined.
+
+Definition state_seq (M: Mealy) : Type :=
+    { s : nat -> Q M & { n : nat & (forall t, (0 < t /\ t < n) -> exists input, s t = fst ((δ M) (s (t - 1)) input)) } }.
+
+Definition len {M} (s : state_seq M) : nat := ltac:(repeat destruct s;
+                                                  match goal with
+                                                  | [ n : nat |- _ ] => exact n
+                                                  end).
+
+Definition state_fn {M} (s : state_seq M) : nat -> Q M := ltac:(repeat destruct s;
+                                                       match goal with | [f : nat -> Q M |- _] => exact f
+                                                       end).
+
+
 Definition reachability_diameter (M : Mealy) : Type :=
+  (* A reachability diameter D is a natural number such that every state reachable
+     in n steps can also be reached in D <= n steps. *)
   { D : nat &
-  forall (s : nat -> Q M) (n : nat),
-    s 0 = Q₀ M 
-    /\ (forall t, t <= n -> exists input, s t = fst ((δ M) (s (t-1)) input))
-    -> (D <= n) 
-       /\ (exists s', s' 0 = Q₀ M 
-           /\ s' D = s n 
-           /\ forall t, t <= D -> 
-                        exists input, s' t = fst ((δ M) (s' (t-1)) input)) }.
+  forall (s : state_seq M) (n: nat) (_ : len s = n) (end_Q : Q M) (_ : (state_fn s) n = end_Q),
+    (D <= n /\ exists (s' : state_seq M ), len s' = D /\ (state_fn s') D = end_Q) }.
 
-Definition IsFinite (M: Mealy) : Prop := 
-  exists (s: nat -> Q M) (D : nat), forall (q : Q M), exists (n : nat), n <= D /\ s n = q.
-  
-Theorem reachability_diameter_suffices_bmc (M : Mealy) (P : LTL) : 
-  forall (_D : reachability_diameter M) (D : nat) (I : nat -> Σ M), 
-    (exists p, P = always_ltl p) ->
+Lemma repeats_past_rd : forall M I b D (_D: reachability_diameter M),
     D = projT1 _D ->
-    models_upto D (MealyTrace M I) P ->
-    models (MealyTrace M I) P.
+    b > D ->
+    (exists k, (k >= 0 /\ k <= D) -> MealyTrace M I k = MealyTrace M I b).
   Proof.
-    intros.
-    match goal with
-    | [ H : exists p, P = always_ltl p |- _ ] => destruct H as [p H]; rewrite H in *; clear H P
-    end.
-    simpl.
-    left.
+    intros M I b D _D HD b_gt_D.
+    destruct _D.
+    simpl in *.
+    symmetry in HD.
+    subst.
+    unshelve epose proof (_ : { s : state_seq M & (forall q : (Q M), exists (t : nat), t <= len s /\ (state_fn s) t = q)} ).
+    {
+      admit.
+    }
+    destruct X as [s pf].
+    Abort. (* I don't think this is actually true, because it can take less time to reach a reachable state than to repeat a state *)
+
+Theorem rd_sufficies_bmc_gp_case:
+  forall (D: nat) (M: Mealy) (I: nat -> Σ M) (p: (Q M * option (Σ M)) -> Prop) (_D : reachability_diameter M),
+    D = projT1 _D ->
+    models_upto D (MealyTrace M I) (always_ltl (injp_ltl p)) ->
+    models (MealyTrace M I) (always_ltl (injp_ltl p)).
+Proof.
+  intros D M I p _D HD HBoundedModel.
+  cbn in *.
+  classical.
+  left.
+  intro.
+  classical.
+  left.
+  split; intuition auto.
+  unshelve epose proof (_ : forall x : nat,
+                      (0 <= x /\
+                       x <= D ->
+                       (p (MealyTrace M I x)))).
+  {
+    intros x0 ?.
+    specialize (HBoundedModel x0).
     classical.
-    intro.
-    classical.
-    left.
-    intuition.
-    (* proof proceeds by case analysis on the comparison of x and D. *)
-    pose proof (lt_eq_lt_dec D x) as HcompDx.
     repeat match goal with
-            | [ H : context[{_} + {_}] |- _] => destruct H as [H | H]
-    end.
-    {
-      admit. (* D < x, hard case, need induction on x. *)
-    }
-    {
-      (* we have `models_upto D p` and we need to show that `models (from D ζ) p` *)  
-      (* D = x, case should be easy *)
-      rewrite <-HcompDx in *.
-      assert (HStronger: forall T (ζ: TemInt) φ, (forall k, models_upto k ζ (always_ltl φ)) -> forall t, @models T (from t ζ) φ).
-      {
-        intros.
-        specialize (H t).
-        simpl in H.        
-        induction t; [solve[intuition auto]|].
-        {
-          induction D.
-          {
-            simpl in H1.
-            inversion H1.
-          }
-          {
-            simpl in IHD. eapply IHD.
-            { admit. }
-          }  
-          simpl in H1.
-          simpl in H1.
-          destruct t.
-        }
-        {
-          specialize (H (S t)).
-          simpl in H.
-        }
-      }      
-      dependent induction D.
-      { simpl in H1.
-        inversion H1. }
-      { }
-      
-      induction D.
-      { intros.
-        simpl in H1. 
-        inversion H1. }
-      {
-        intros.
+           | [H : _ \/ _ |- _] => destruct H
+           | [H: exists _, _ |- _] => destruct H
+           | [H: _ -> False |- _] => eapply H
+           end; try solve[lia || auto].
+  }
+  change (p (MealyTrace M I x)).
+  clear HBoundedModel.
+  rename H into HBoundedModel.
+  unfold reachability_diameter in _D.
+  destruct _D as [D' Drd].
+  simpl in HD.
+  symmetry in HD.
+  subst.
+  destruct (PeanoNat.Nat.le_decidable x D).
+  {
+    (* x <= D *)
+    specialize (HBoundedModel x ltac:(lia)); auto.
+  }
+  {
+    unshelve epose proof (_ : x > D) as Hgt.
+    solve[lia].
+    clear H.
 
-        eapply IHD.  
-       }
-
-      unfold models_upto,always_ltl in H1.
-      simpl in H1.
-
-    }
-    repeat match goal destruct HcompDx.
-    { }
-    { }
-    
-    induction x.
+    epose (q := fst (MealyTrace M I x)).
+    (* constructing the always q state sequence *)
+    unshelve epose proof ( _ : { s : state_seq M & (state_fn s (len s) = q)}) as X.
     {
-      unfold reachability_diameter in _D.
-      destruct _D as [D' H_D_reachability_diameter].
-      simpl in H0.
-      rewrite <-H0 in *. clear H0. clear D'.
-      induction D; intuition auto.
-      {
-        match goal with
-        | [ H : models_upto _ _ _ |- _ ] => inversion H
-        end.
-      }
-      {
-        eapply IHD.
-        intros.
-        split.
-        {
-          unshelve epose proof (_ : S D <= n).
-          { 
-            eapply H_D_reachability_diameter.
-            eapply H.
-          }
+      unshelve econstructor.
+      { unshelve econstructor.
+        { exact (fun t => fst (MealyTrace M I t)). }
+        { unshelve econstructor; try solve[exact x].
+              (* stuck here *)
+          intros.
+          exists (I (t-1)).
+          Set Nested Proofs Allowed.
+          Lemma mealy_unfold_step : forall M I t,
+              t > 0 ->
+              fst (MealyTrace M I t) = fst (δ M (fst (MealyTrace M I (t - 1))) (I (t - 1))).
+            intros.
+            destruct t.
+            { lia. }
+            {
+              simpl.
+              unshelve erewrite (_ : forall k, k - 0 = k). { lia. }
+              unshelve destruct (MealyTrace M I t).
+              simpl.
+              Lemma fst_stupid: forall A B (p : A * B),
+                  fst (let (a,b) := p in (a, Some b)) = fst p.
+                intros.
+                unfold fst.
+                destruct p.
+                auto.
+              Defined.
+
+              rewrite fst_stupid.
+              reflexivity.
+            }
+          Defined.
+          rewrite mealy_unfold_step.
+          auto.
           lia.
-         }
-         {
-          
-         }
+        }
       }
-      unfold models_upto in H1.
-      simpl in H1.
-      simpl in *.
-    
+      { simpl; auto. }
+    }
+    (* Now just need to use X... *)
+    destruct X as [s Hs].
+    specialize (Drd s (len s) ltac:(auto) q Hs).
+    (* Need to connect the state function specified to exist by D being RD *)
+
+
+    ltac:(case TODO).
+  }
+  Defined.

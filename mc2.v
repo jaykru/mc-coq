@@ -11,7 +11,7 @@ Axiom DeMorgan1 : forall (P Q : Prop), ~(P /\ Q) <-> (~P \/ ~Q).
 Axiom DeMorgan2 : forall (P Q : Prop), ~(P \/ Q) <-> (~P /\ ~Q).
 Axiom TODO : False.
 
-Ltac classical := 
+Ltac classical :=
   repeat match goal with
   | [ H : context[_ -> False] |- _ ] => rewrite (fold_not) in H (* sometimes intuition leaves us with negations like this. *)
   | [ H : context[~(~ _)]|- _ ] => rewrite <-double_neg in H
@@ -111,7 +111,7 @@ Section LTLdef.
       end.
 
   Definition clarke_bm k ζ φ: Prop := clarke_bm_helper 0 k ζ φ.
-  Definition models_upto := clarke_bm.
+
 
   Definition not_ltl (φ : LTL) : LTL := imp_ltl φ false_ltl.
   Definition ev_ltl (φ : LTL): LTL := true_ltl U- φ.
@@ -248,12 +248,21 @@ Fixpoint MealyTrace' (M : Mealy) (I : nat -> Σ M) (n : nat) {struct n}: (Q M) *
 Definition MealyTrace (M : Mealy) (I : nat -> Σ M) : @TemInt (Q M * option (Σ M)) :=
     fun n => MealyTrace' M I n.
 
+Definition models_upto M k φ :=
+      (* M models φ upto k cycles if (clake_bm k ζ φ) holds for all input traces I *)
+      forall I, clarke_bm k (MealyTrace M I) φ.
+
 Lemma MealyTrace0isQ0: forall M I, fst (MealyTrace M I 0) = Q0 M.
   auto.
 Defined.
 
+Search pair.
+
 Definition state_seq (M: Mealy) : Type :=
-    { s : nat -> Q M & { n : nat & (forall t, (0 < t /\ t < n) -> exists input, s t = fst ((δ M) (s (t - 1)) input)) } }.
+    { s : nat -> Q M
+      & { n : nat
+          & ((forall t, (0 < t /\ t < n) ->
+                  { input : Σ M & s t = fst ((δ M) (s (t - 1)) input) } ) * (s 0 = Q0 M))%type } }.
 
 Definition len {M} (s : state_seq M) : nat := ltac:(repeat destruct s;
                                                   match goal with
@@ -292,7 +301,7 @@ Lemma repeats_past_rd : forall M I b D (_D: reachability_diameter M),
 Theorem rd_sufficies_bmc_gp_case:
   forall (D: nat) (M: Mealy) (I: nat -> Σ M) (p: (Q M * option (Σ M)) -> Prop) (_D : reachability_diameter M),
     D = projT1 _D ->
-    models_upto D (MealyTrace M I) (always_ltl (injp_ltl p)) ->
+    models_upto M D (always_ltl (injp_ltl p)) ->
     models (MealyTrace M I) (always_ltl (injp_ltl p)).
 Proof.
   intros D M I p _D HD HBoundedModel.
@@ -303,19 +312,24 @@ Proof.
   classical.
   left.
   split; intuition auto.
-  unshelve epose proof (_ : forall x : nat,
-                      (0 <= x /\
-                       x <= D ->
-                       (p (MealyTrace M I x)))).
+  unshelve epose proof (_ : forall I (x : nat),
+                             (0 <= x /\
+                              x <= D ->
+                              (p (MealyTrace M I x)))).
   {
-    intros x0 ?.
-    specialize (HBoundedModel x0).
+    intros I0 x0 ?.
+    unfold models_upto, clarke_bm,clarke_bm_helper in HBoundedModel.
+    simpl in HBoundedModel.
+    setoid_rewrite forall_exists_duality1 in HBoundedModel.
+    repeat setoid_rewrite DeMorgan1 in HBoundedModel.
+    specialize (HBoundedModel I0 x0).
     classical.
     repeat match goal with
            | [H : _ \/ _ |- _] => destruct H
            | [H: exists _, _ |- _] => destruct H
            | [H: _ -> False |- _] => eapply H
            end; try solve[lia || auto].
+
   }
   change (p (MealyTrace M I x)).
   clear HBoundedModel.
@@ -328,7 +342,7 @@ Proof.
   destruct (PeanoNat.Nat.le_decidable x D).
   {
     (* x <= D *)
-    specialize (HBoundedModel x ltac:(lia)); auto.
+    specialize (HBoundedModel I x ltac:(lia)); auto.
   }
   {
     unshelve epose proof (_ : x > D) as Hgt.
@@ -337,15 +351,15 @@ Proof.
 
     epose (q := fst (MealyTrace M I x)).
     (* constructing the always q state sequence *)
-    unshelve epose proof ( _ : { s : state_seq M & (state_fn s (len s) = q)}) as X.
+    unshelve epose proof ( _ : { s : state_seq M & (state_fn s (len s) = q /\ len(s) = x)}) as X.
     {
       unshelve econstructor.
       { unshelve econstructor.
         { exact (fun t => fst (MealyTrace M I t)). }
         { unshelve econstructor; try solve[exact x].
-              (* stuck here *)
-          intros.
-          exists (I (t-1)).
+          split; [|auto].
+          unshelve econstructor.
+          exact (I (t-1)).
           Set Nested Proofs Allowed.
           Lemma mealy_unfold_step : forall M I t,
               t > 0 ->
@@ -378,10 +392,73 @@ Proof.
       { simpl; auto. }
     }
     (* Now just need to use X... *)
-    destruct X as [s Hs].
+    destruct X as [s [Hs H_len_s]].
     specialize (Drd s (len s) ltac:(auto) q Hs).
-    (* Need to connect the state function specified to exist by D being RD *)
+    destruct Drd as [HDlens seq_wit].
+    destruct seq_wit as [s' [len_s'_is_D s'_ends_with_q]].
+    unfold state_seq in s'.
+    destruct s' as [s'fn [len_s' [s'connected s'start_ok]]]; simpl in *.
+    unshelve epose proof (_ : nat -> Σ M) as I'.
+    {
+      (* defining I'(t) = if t <= D then i'_t else i'_D *)
+      intro t.
+      remember (PeanoNat.Nat.ltb t D) as pf.
+      destruct pf.      
+      {
+        (* t < D case *)
+        Search Nat.leb.
+        assert (H_t_lt_D: t < D).
+        { 
+          eapply PeanoNat.Nat.ltb_lt;
+          symmetry in Heqpf;
+          assumption. 
+        }
+        
+        remember (PeanoNat.Nat.eqb t 0) as pf2.
+        destruct pf2.
+        {
+          (* t == 0 case*)  
+          exact (I 0). (* this doesn't actually matter, so I just use a random alphabet symbol I had in context.*)
+        }
+        subst.
+        assert (H_t_ne_0: t <> 0).
+        {
+          symmetry in Heqpf2.   
+          eapply PeanoNat.Nat.eqb_neq.
+          symmetry in Heqpf;
+          assumption. 
+        }
+        assert (H_t_gt_0: t > 0). { solve[lia]. }
+        unshelve epose proof (s'connected t _) as H_exists_input.
+        lia.
+        destruct H_exists_input as [input _].
+        exact input.
+      }
+      {
+        (* t >= D case, just use i'_D *)
+        unshelve epose proof (s'connected (len_s' - 1) ltac:(case TODO)) as i'_D_and_pf.
+        destruct i'_D_and_pf as [i'_D _].
+        exact i'_D.
+      }
+    }
+    {
+      specialize (HBoundedModel I' x).
+      assert (fst (MealyTrace M I' x) = fst (MealyTrace M I x)).
+      {
+        simpl.
+        destruct (MealyTrace M I' x), (MealyTrace M I x), (δ M q0 (I' x)), (δ M q0 (I x)).
+        simpl.
+        rewrite IHx.
+        r
+        auto.
 
+        induction x; simpl; [auto|].
+        cbv in IHx.
+        simpl.
+        rewrite IHx.
+        auto.
+        simpl. }
+    }
 
     ltac:(case TODO).
   }

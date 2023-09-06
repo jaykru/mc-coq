@@ -398,66 +398,132 @@ Proof.
     destruct seq_wit as [s' [len_s'_is_D s'_ends_with_q]].
     unfold state_seq in s'.
     destruct s' as [s'fn [len_s' [s'connected s'start_ok]]]; simpl in *.
-    unshelve epose proof (_ : nat -> Σ M) as I'.
-    {
-      (* defining I'(t) = if t <= D then i'_t else i'_D *)
-      intro t.
-      remember (PeanoNat.Nat.ltb t D) as pf.
-      destruct pf.      
-      {
-        (* t < D case *)
-        Search Nat.leb.
-        assert (H_t_lt_D: t < D).
-        { 
-          eapply PeanoNat.Nat.ltb_lt;
-          symmetry in Heqpf;
-          assumption. 
-        }
-        
-        remember (PeanoNat.Nat.eqb t 0) as pf2.
-        destruct pf2.
-        {
-          (* t == 0 case*)  
-          exact (I 0). (* this doesn't actually matter, so I just use a random alphabet symbol I had in context.*)
-        }
-        subst.
-        assert (H_t_ne_0: t <> 0).
-        {
-          symmetry in Heqpf2.   
-          eapply PeanoNat.Nat.eqb_neq.
-          symmetry in Heqpf;
-          assumption. 
-        }
-        assert (H_t_gt_0: t > 0). { solve[lia]. }
-        unshelve epose proof (s'connected t _) as H_exists_input.
-        lia.
-        destruct H_exists_input as [input _].
+
+    Definition state_seq_to_temint {M} (s: state_seq M) (s_len_2plus: len s >= 2): nat -> Σ M.
+      destruct s as [s_fn [len_s [s_connected s_start_ok]]].
+      intro x.
+      remember x as n.
+      destruct x.
+      { (* x = 0 *)
+        simpl in *.
+        destruct (s_connected 1 ltac:(lia)) as [input input_good].
         exact input.
       }
       {
-        (* t >= D case, just use i'_D *)
-        unshelve epose proof (s'connected (len_s' - 1) ltac:(case TODO)) as i'_D_and_pf.
-        destruct i'_D_and_pf as [i'_D _].
-        exact i'_D.
+        simpl in *.
+        destruct (PeanoNat.Nat.ltb (S n) len_s).
+        { (* x + 1 < len_s *)
+          specialize (s_connected 1 ltac:(lia)) as [input input_good].
+          exact input.
+        }
+        {
+          (* x+1 > len_s, don't care so we use s_connected 1.*)
+          destruct (s_connected 1 ltac:(lia)) as [input input_good].
+          exact input.
+        }
+      }
+    Defined.
+
+    Lemma state_seq_to_temint_ok: forall {M},
+        forall (t: nat),
+          (forall (q: Q M) (s : state_seq M) (s_len_2plus: len s >= 2),
+              t <= len s ->
+              (state_fn s) t = q ->
+              fst (MealyTrace M (state_seq_to_temint s s_len_2plus) t) = q).
+    Proof.
+      induction t; intros ? ? ?; destruct s as [s_fn [s_len [s_connected s_start_ok]]].
+      {
+        simpl in *.
+        intros.
+        subst.
+        auto.
+      }
+      {
+        intros H1 H2.
+        cbn in H1,H2.
+        cbn -[state_seq_to_temint] in IHt.
+        rewrite mealy_unfold_step.
+        unshelve erewrite (_ : S t - 1 = t) in *. solve[lia].
+        unshelve erewrite IHt.
+        all: admit.
+      }
+      Admitted.
+
+    pose (state_seq_to_temint s ltac:(case TODO)) as I'.
+    pose proof (state_seq_to_temint_ok x q s ltac:(case TODO)) as I'ok.
+
+
+
+    unshelve epose proof (_ : { I' : nat -> Σ M & fst (MealyTrace M I' x) = q } ) as I'.
+    {
+      (* defining I'(t) = if t <= D then i'_t else i'_D *)
+      unshelve econstructor.
+      {
+          intro t.
+          remember (PeanoNat.Nat.ltb t D) as pf.
+          destruct pf.
+          {
+            (* t < D case *)
+            Search Nat.leb.
+            assert (H_t_lt_D: t < D).
+            {
+              eapply PeanoNat.Nat.ltb_lt;
+              symmetry in Heqpf;
+              assumption.
+            }
+
+            remember (PeanoNat.Nat.eqb t 0) as pf2.
+            destruct pf2.
+            {
+              (* t == 0 case*)
+              exact (I 0). (* this doesn't actually matter, so I just use a random alphabet symbol I had in context.*)
+            }
+            subst.
+            assert (H_t_ne_0: t <> 0).
+            {
+              symmetry in Heqpf2.
+              eapply PeanoNat.Nat.eqb_neq.
+              symmetry in Heqpf;
+              assumption.
+            }
+            assert (H_t_gt_0: t > 0). { solve[lia]. }
+            unshelve epose proof (s'connected t _) as H_exists_input.
+            lia.
+            destruct H_exists_input as [input _].
+            exact input.
+          }
+          {
+            (* t >= D case, just use i'_D *)
+            unshelve epose proof (s'connected (len_s' - 1) ltac:(case TODO)) as i'_D_and_pf.
+            destruct i'_D_and_pf as [i'_D _].
+            exact i'_D.
+          }
+      }
+      {
+        match goal with
+          | [|- fst ?x = _ ] => destruct x
+        end.
+        simpl.
       }
     }
-    {
-      specialize (HBoundedModel I' x).
-      assert (fst (MealyTrace M I' x) = fst (MealyTrace M I x)).
-      {
-        simpl.
-        destruct (MealyTrace M I' x), (MealyTrace M I x), (δ M q0 (I' x)), (δ M q0 (I x)).
-        simpl.
-        rewrite IHx.
-        r
-        auto.
+          {
+            specialize (HBoundedModel I' x).
+            assert (fst (MealyTrace M I' x) = fst (MealyTrace M I x)).
+            {
+              simpl.
+              destruct (MealyTrace M I' x), (MealyTrace M I x), (δ M q0 (I' x)), (δ M q0 (I x)).
+              simpl.
+              rewrite IHx.
+              r
+                auto.
 
-        induction x; simpl; [auto|].
-        cbv in IHx.
-        simpl.
-        rewrite IHx.
-        auto.
-        simpl. }
+              induction x; simpl; [auto|].
+              cbv in IHx.
+              simpl.
+              rewrite IHx.
+              auto.
+              simpl. }
+          }
     }
 
     ltac:(case TODO).
